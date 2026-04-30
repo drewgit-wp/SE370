@@ -1,6 +1,6 @@
 # CDT Miller, Loughman, Fountain
 # Replit and ChatGPT used across all functions and concepts for development, troubleshooting, and efficiency
-#  =============================================================
+# =============================================================
 # app.py  —  Market Terminal (Python / Streamlit entry point)
 # =============================================================
 # Launch in terminal with:
@@ -163,8 +163,7 @@ with st.status("Loading market data…", expanded=False) as status:
 
     st.write("Fetching exchange data (FMP)…")
     fmp_data = {t: data.fetch_exchange_fmp(t) for t in tickers}
-    st.write("Loading exchange map database…")
-    exchange_map_df = data.get_exchange_map_dataframe(refresh=False)
+
     status.update(label="Data loaded", state="complete")
 
 
@@ -363,15 +362,15 @@ def style_recommendation(value):
 
 styled_display_df = (
     display_df.style
-    .applymap(
+    .map(
         style_positive_negative,
         subset=["Change $", "Return 1D %", "Return 5D %", "Return 1M %"],
     )
-    .applymap(
+    .map(
         style_dividend,
         subset=["Dividend Yield %"],
     )
-    .applymap(
+    .map(
         style_recommendation,
         subset=[
             "EMA Signal",
@@ -494,11 +493,164 @@ st.plotly_chart(fig_bubble, use_container_width=True)
 st.divider()
 
 
+
+
 # ─────────────────────────────────────────────────────────────
-# 8-Tab panel
+# Stock Interactive Heatmap
 # ─────────────────────────────────────────────────────────────
 
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+def tab_stock_heatmap(overview_df: pd.DataFrame, fundamentals: dict, price_data: dict, valid_tickers: list) -> None:
+    """Interactive heatmap grouped by sector with live ticker chart."""
+
+    st.subheader("🔥 Stock Interactive Heatmap")
+    st.caption(
+        "Green = positive return, red = negative return, white = near flat. "
+        "Box size is based on market cap when available, otherwise volume."
+    )
+
+    heatmap_df = overview_df.copy()
+
+    heatmap_df["Sector"] = heatmap_df["Ticker"].apply(
+        lambda t: fundamentals.get(t, {}).get("sector") or "Unknown"
+    )
+    heatmap_df["Company"] = heatmap_df["Ticker"].apply(
+        lambda t: fundamentals.get(t, {}).get("shortName")
+        or fundamentals.get(t, {}).get("longName")
+        or t
+    )
+
+    heatmap_df["Market Cap Raw"] = heatmap_df["Ticker"].apply(
+        lambda t: fundamentals.get(t, {}).get("marketCap")
+    )
+    heatmap_df["Heatmap Size"] = pd.to_numeric(heatmap_df["Market Cap Raw"], errors="coerce")
+    heatmap_df["Heatmap Size"] = heatmap_df["Heatmap Size"].fillna(
+        pd.to_numeric(heatmap_df.get("Volume", 1), errors="coerce").fillna(1)
+    )
+    heatmap_df["Heatmap Size"] = heatmap_df["Heatmap Size"].clip(lower=1)
+
+    col_a, col_b, col_c = st.columns([1, 1, 2])
+
+    with col_a:
+        color_metric = st.selectbox(
+            "Color by performance",
+            ["Return 1D %", "Return 5D %", "Return 1M %"],
+            index=0,
+        )
+
+    with col_b:
+        group_by = st.selectbox(
+            "Group by",
+            ["Sector", "Final Recommendation"],
+            index=0,
+        )
+
+    with col_c:
+        sector_filter = st.multiselect(
+            "Filter by sector",
+            sorted(heatmap_df["Sector"].dropna().unique()),
+            default=sorted(heatmap_df["Sector"].dropna().unique()),
+        )
+
+    heatmap_df = heatmap_df[heatmap_df["Sector"].isin(sector_filter)]
+
+    if heatmap_df.empty:
+        st.warning("No stocks match your heatmap filters.")
+        return
+
+    st.markdown(
+        """
+        **Color chart:** 🟢 Up | ⚪ Flat | 🔴 Down  
+        **Box size:** larger box = larger market cap, or volume if market cap is unavailable.
+        """
+    )
+
+    fig_heatmap = px.treemap(
+        heatmap_df,
+        path=[group_by, "Ticker"],
+        values="Heatmap Size",
+        color=color_metric,
+        color_continuous_scale=["#ef4444", "#f8fafc", "#22c55e"],
+        color_continuous_midpoint=0,
+        hover_name="Ticker",
+        hover_data={
+            "Company": True,
+            "Sector": True,
+            "Price": ":$.2f",
+            "Change $": ":$.2f",
+            "Return 1D %": ":.2f",
+            "Return 5D %": ":.2f",
+            "Return 1M %": ":.2f",
+            "Final Recommendation": True,
+            "Market Cap Display": True,
+            "Volume": ":,.0f",
+            "Heatmap Size": False,
+            "Market Cap Raw": False,
+        },
+        title=f"Stock Heatmap — colored by {color_metric}",
+    )
+
+    fig_heatmap.update_layout(
+        height=700,
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#cbd5e1"),
+        margin=dict(l=10, r=10, t=60, b=10),
+    )
+
+    st.plotly_chart(fig_heatmap, use_container_width=True)
+
+    st.subheader("Heatmap Data Table")
+    table_cols = [
+        "Ticker", "Company", "Sector", "Price", "Change $",
+        "Return 1D %", "Return 5D %", "Return 1M %",
+        "Final Recommendation", "Market Cap Display", "Volume", "P/E",
+    ]
+    st.dataframe(
+        heatmap_df[table_cols].sort_values(color_metric, ascending=False),
+        use_container_width=True,
+        column_config={
+            "Price": st.column_config.NumberColumn("Price", format="$%.2f"),
+            "Change $": st.column_config.NumberColumn("Change", format="$%.2f"),
+            "Return 1D %": st.column_config.NumberColumn("1D %", format="%.2f%%"),
+            "Return 5D %": st.column_config.NumberColumn("5D %", format="%.2f%%"),
+            "Return 1M %": st.column_config.NumberColumn("1M %", format="%.2f%%"),
+            "Volume": st.column_config.NumberColumn("Volume", format="%.0f"),
+            "P/E": st.column_config.NumberColumn("P/E", format="%.1f"),
+        },
+    )
+
+    st.subheader("Live Data Chart")
+    chart_ticker = st.selectbox("Choose ticker for chart", heatmap_df["Ticker"].tolist())
+    chart_df = price_data.get(chart_ticker)
+
+    if chart_df is None or chart_df.empty:
+        st.warning(f"No chart data available for {chart_ticker}.")
+        return
+
+    fig_line = px.line(
+        chart_df,
+        x=chart_df.index,
+        y="Close",
+        title=f"{chart_ticker} Price Over Selected Timeline",
+    )
+    fig_line.update_layout(
+        height=450,
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#cbd5e1"),
+        margin=dict(l=10, r=10, t=60, b=10),
+    )
+    fig_line.update_xaxes(gridcolor="rgba(255,255,255,0.05)")
+    fig_line.update_yaxes(gridcolor="rgba(255,255,255,0.05)")
+
+    st.plotly_chart(fig_line, use_container_width=True)
+
+
+# ─────────────────────────────────────────────────────────────
+# 9-Tab panel
+# ─────────────────────────────────────────────────────────────
+
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
     "📊 Overview",
     "⚖️ Comparison",
     "🔬 Deep Dive",
@@ -506,6 +658,7 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
     "🗃️ Raw Data",
     "🗺️ Exchanges Map",
     "📍 HQ Locations",
+    "🔥 Heatmap",
     "⚙️ Administration",
 ])
 
@@ -531,10 +684,13 @@ with tab5:
 
 
 with tab6:
-    tabs.tab_exchanges_map(exchange_map_df)
+    tabs.tab_exchanges_map(valid_tickers, fundamentals, hq_locations)
 
 with tab7:
     tabs.tab_hq_locations(hq_locations)
 
 with tab8:
+    tab_stock_heatmap(overview_df, fundamentals, price_data, valid_tickers)
+
+with tab9:
     tabs.tab_administration(signal_data, valid_tickers)
