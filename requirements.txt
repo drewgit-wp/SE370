@@ -1,0 +1,34 @@
+# =============================================================
+# requirements.txt  —  Python package dependencies
+# =============================================================
+# Install all packages with:
+#   pip install -r requirements.txt
+# (The run.sh / run.bat scripts do this automatically.)
+# =============================================================
+
+# Streamlit  — the web UI framework that powers this dashboard
+# Creates the layout, charts panel, metric cards, and tab system.
+streamlit>=1.35.0
+
+# yfinance  — Yahoo Finance data downloader (free, no API key)
+# Provides price history (OHLCV) and company fundamentals.
+yfinance>=0.2.40
+
+# pandas  — tabular data manipulation
+# Used throughout for DataFrame operations on price series.
+pandas>=2.0.0
+
+# numpy  — numerical computing (RSI, volatility calculations)
+numpy>=1.26.0
+
+# plotly  — interactive charting library
+# st.plotly_chart() renders these figures inside the Streamlit app.
+plotly>=5.20.0
+
+# requests  — HTTP client for Alpha Vantage and FMP API calls
+requests>=2.31.0
+
+# python-dotenv  — loads .env file into os.environ
+# Allows config.py to read ALPHA_VANTAGE_API_KEY and FMP_API_KEY
+# from a .env file without hardcoding secrets in source code.
+python-dotenv>=1.0.0
