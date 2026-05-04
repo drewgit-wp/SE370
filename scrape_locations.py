@@ -29,6 +29,10 @@ from typing import Any
 import pandas as pd
 import requests
 import yfinance as yf
+import re
+from urllib.parse import urljoin, urlparse
+from urllib.robotparser import RobotFileParser
+from bs4 import BeautifulSoup
 
 
 # Local cache prevents repeated geocoding on every Streamlit rerun.
@@ -267,6 +271,170 @@ def geocode_address(query: str) -> dict:
             "source": "Nominatim",
         }
 
+# ─────────────────────────────────────────────────────────────
+# Optional official-site webscraping fallback
+# ─────────────────────────────────────────────────────────────
+
+SCRAPE_TIMEOUT_SECONDS = 10
+
+SCRAPE_HEADERS = {
+    "User-Agent": USER_AGENT,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+}
+
+ADDRESS_KEYWORDS = [
+    "headquarters",
+    "head office",
+    "corporate office",
+    "global headquarters",
+    "address",
+    "contact us",
+]
+
+CONTACT_PATHS = [
+    "",
+    "/contact",
+    "/contact-us",
+    "/about",
+    "/about-us",
+    "/company",
+    "/investors",
+]
+
+
+def _allowed_by_robots(url: str) -> bool:
+    """
+    Check robots.txt before scraping a page.
+
+    This makes the scraper more responsible because it avoids pages
+    that the site owner has disallowed for automated access.
+    """
+    try:
+        parsed = urlparse(url)
+
+        if not parsed.scheme or not parsed.netloc:
+            return False
+
+        robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
+
+        parser = RobotFileParser()
+        parser.set_url(robots_url)
+        parser.read()
+
+        return parser.can_fetch(USER_AGENT, url)
+
+    except Exception:
+        # If robots.txt cannot be checked, be conservative but still allow
+        # simple class-project use. Change this to False for stricter behavior.
+        return True
+
+
+def _extract_address_candidate(text: str) -> str:
+    """
+    Try to extract a likely address from visible page text.
+
+    This is intentionally simple:
+      - look near headquarters/contact keywords
+      - return a short text window that can be sent to Nominatim
+    """
+    if not text:
+        return ""
+
+    # Collapse repeated whitespace.
+    clean_text = re.sub(r"\s+", " ", text).strip()
+
+    lower_text = clean_text.lower()
+
+    for keyword in ADDRESS_KEYWORDS:
+        index = lower_text.find(keyword)
+
+        if index == -1:
+            continue
+
+        # Grab nearby text after the keyword.
+        snippet = clean_text[index:index + 350]
+
+        # Remove common footer/legal clutter.
+        snippet = re.split(
+            r"(privacy policy|terms of use|cookie|©|all rights reserved)",
+            snippet,
+            flags=re.IGNORECASE,
+        )[0]
+
+        if len(snippet) >= 20:
+            return snippet.strip(" :-|")
+
+    return ""
+
+### Data Scraping implementation function fallback.
+
+def scrape_official_site_for_hq(company_name: str, website: str) -> dict:
+    """
+    Scrape a company's official website for a headquarters/contact address.
+
+    Returns:
+        {
+            "address": str,
+            "source_url": str,
+            "source": "Official website scrape"
+        }
+
+    This is true webscraping because it:
+      1. downloads HTML pages,
+      2. parses HTML with BeautifulSoup,
+      3. extracts visible text,
+      4. searches for HQ/address clues.
+    """
+    website = _safe_str(website)
+
+    if not website:
+        return {"address": "", "source_url": "", "source": ""}
+
+    if not website.startswith(("http://", "https://")):
+        website = "https://" + website
+
+    for path in CONTACT_PATHS:
+        url = urljoin(website.rstrip("/") + "/", path.lstrip("/"))
+
+        if not _allowed_by_robots(url):
+            continue
+
+        try:
+            response = requests.get(
+                url,
+                headers=SCRAPE_HEADERS,
+                timeout=SCRAPE_TIMEOUT_SECONDS,
+            )
+
+            if response.status_code != 200:
+                continue
+
+            content_type = response.headers.get("content-type", "").lower()
+
+            if "text/html" not in content_type:
+                continue
+
+            soup = BeautifulSoup(response.text, "lxml")
+
+            # Remove scripts/styles/nav clutter before extracting text.
+            for tag in soup(["script", "style", "noscript", "svg"]):
+                tag.decompose()
+
+            visible_text = soup.get_text(separator=" ", strip=True)
+
+            candidate = _extract_address_candidate(visible_text)
+
+            if candidate:
+                return {
+                    "address": candidate,
+                    "source_url": url,
+                    "source": "Official website scrape",
+                }
+
+        except Exception:
+            continue
+
+    return {"address": "", "source_url": "", "source": ""}
 
 def resolve_hq_location(
     ticker: str,
@@ -333,6 +501,16 @@ def resolve_hq_location(
     if profile["address"] and profile["address"] not in search_queries:
         search_queries.append(profile["address"])
 
+    # Webscraping fallback:
+    # Try the company's official website for a headquarters/contact address.
+    scraped = scrape_official_site_for_hq(
+        company_name=company_name,
+        website=profile.get("website", ""),
+    )
+
+    if scraped.get("address") and scraped["address"] not in search_queries:
+        search_queries.append(scraped["address"])
+
     # Last fallback: company name + headquarters.
     search_queries.append(f"{company_name} headquarters")
 
@@ -352,7 +530,11 @@ def resolve_hq_location(
                 "Latitude": geo["lat"],
                 "Longitude": geo["lon"],
                 "Resolved Address": geo["display_name"],
-                "Source": f"Geocoded: {geo['source']}",
+                "Source": (
+    f"Scraped official site + geocoded: {scraped.get('source_url')}"
+    if scraped.get("address") and query == scraped.get("address")
+    else f"Geocoded: {geo['source']}"
+),
                 "Found": True,
             }
 
