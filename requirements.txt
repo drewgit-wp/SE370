@@ -32,3 +32,7 @@ requests>=2.31.0
 # Allows config.py to read ALPHA_VANTAGE_API_KEY and FMP_API_KEY
 # from a .env file without hardcoding secrets in source code.
 python-dotenv>=1.0.0
+
+# For successful webscraping as a backup to API call.
+beautifulsoup4
+lxml
